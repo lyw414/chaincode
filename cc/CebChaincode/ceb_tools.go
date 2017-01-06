@@ -3,7 +3,7 @@ package main
 import(
 	"fmt"
 	"errors"
-//	"strconv"
+	"strconv"
 	"crypto/x509"
 	"encoding/pem"
 	"crypto/sha256"
@@ -173,5 +173,117 @@ func executecontract(stub shim.ChaincodeStubInterface,args []string) (error){
 	if err != nil {
 		return errors.New("In createcontract :: PutState Err!key:" + contractname)
 	}
+	return nil
+}
+func transeAtoB(stub shim.ChaincodeStubInterface,args []string) (error){
+	//A账户名（公钥hash) 、B账户名（公钥hash）、金额、A对交易数据签名
+	if len(args) != 4 {
+		return errors.New("Transfer :: Incorrect number of arguments. Expecting 4")
+	}
+	transfer_accoutname1 := args[0]
+	transfer_accoutname2 := args[1]
+	transfer_sum,_:= strconv.ParseFloat(args[2],64)
+	transfer_sign := args[3]
+	//判断A账户是否存在
+	transfer_valuebytes1,err := stub.GetState(transfer_accoutname1)
+	if err != nil {
+		return errors.New("Transfer :: GetState Err! Key: " + transfer_accoutname1)
+	}
+	if transfer_valuebytes1 == nil {
+		return errors.New("Transfer :: user [" + transfer_accoutname1 + "] not exist!")
+	}
+
+	//获取A账户结构体
+	var transfer_account1 cebaccount
+	transfer_err := json.Unmarshal(transfer_valuebytes1,&transfer_account1)
+	if transfer_err != nil {
+		return errors.New("Transfer :: Unmarshal Err!")
+	}
+
+	//获取交易数据
+	transfer_msg := transfer_accoutname1 + transfer_accoutname2 + args[2]
+
+	//验证A账户交易（验证A签名）
+	err = verifysignsha256(transfer_msg,transfer_sign,transfer_account1.Rsapk)
+	if err != nil {
+		return errors.New("Transfer :: verifysignsha256 Err!")
+	}
+	
+	//验证A账户余额是否足够支付交易
+	if transfer_account1.Sum < transfer_sum {
+		return errors.New("Transfer :: Sum Err!")
+	}
+
+	//判断B账户是否存在
+	transfer_valuebytes2,err := stub.GetState(transfer_accoutname2)
+	if err != nil {
+		return errors.New("Transfer :: GetState Err! Key: " + transfer_accoutname1)
+	}
+
+	if transfer_valuebytes2 == nil {
+		return errors.New("Transfer :: user [" + transfer_accoutname2 + "] not exist!")
+	}
+
+	//获取B账户结构体
+	var transfer_account2 cebaccount
+	var amount float64
+	transfer_err = json.Unmarshal(transfer_valuebytes2,&transfer_account2)
+	if transfer_err != nil {
+		return errors.New("Transfer :: Unmarshal Err!")
+	}
+	
+	//进行交易处理
+	// B 账户类型判断 A 账户类型判断 此处应添加 常规账户与合约的处理规则 如下简单的实现合约 与 用户
+	if transfer_account2.AccountType == 1 {
+	//合约账户需要满足合约规则后结算出交易金额,B为慈善合约 需满足 捐款金额累加后不大于 筹款总额
+	//下列处理应有相应的统一结构与方法 此处简单处理
+		if transfer_account2.Trance[0] != "effective" {
+			return errors.New("Trans :: Contract uneffective!")
+		}
+		xx,_ := strconv.ParseFloat(analysiscontract(transfer_account2.Trance[1],0),64)
+		//金额未筹集满
+		if xx > transfer_account2.Sum {
+			amount = xx - transfer_account2.Sum 
+			//剩余金额是否小于捐款，若小于只部分捐出 并更新合约的状态
+			if amount <= transfer_sum {
+				transfer_sum = amount	
+				transfer_account2.Trance[0] = "waitforexcute"
+			}
+			
+		}
+	}
+
+	if transfer_account1.AccountType == 1 {
+	//合约账户需要满足合约规则后结算出交易金额
+		transfer_sum = transfer_sum
+	}
+	
+	//转账 A transfer_sum 转 B
+	transfer_account1.Sum = transfer_account1.Sum - transfer_sum
+	transfer_account2.Sum = transfer_account2.Sum + transfer_sum
+	//添加交易记录
+	transfer_account1.Trance = append(transfer_account1.Trance,"To " + transfer_accoutname2 + " " + strconv.FormatFloat(transfer_sum,'f', -1, 64) )
+	transfer_account2.Trance = append(transfer_account2.Trance,"From " + transfer_accoutname1 + " " + strconv.FormatFloat(transfer_sum,'f', -1, 64) )
+	//将A账户结构转为字节
+	transfer_valuebytes1,transfer_err = json.Marshal(transfer_account1)
+	if transfer_err != nil {
+		return errors.New("Transfer :: marshal Err!")
+	}
+	//将A账户信息存入账本
+	err = stub.PutState(transfer_accoutname1,transfer_valuebytes1)
+	if err != nil {
+		return errors.New("OpenAccount :: PutState Error!!!,Key : " + transfer_accoutname1)
+	}
+	//将B账户结构转为字节 
+	transfer_valuebytes2,transfer_err = json.Marshal(transfer_account2)
+	if transfer_err != nil {
+		return errors.New("Transfer :: marshal Err!")
+	}
+	//将B账户信息存入账本
+	err = stub.PutState(transfer_accoutname2,transfer_valuebytes2)
+	if err != nil {
+		return errors.New("OpenAccount :: PutState Error!!!,Key : " + transfer_accoutname2)
+	}
+
 	return nil
 }
